@@ -1,0 +1,11 @@
+name: usb-share-server
+services:
+- name: websocket-server
+  github:
+    repo: your-repo/remote-usb
+    branch: main
+    deploy_on_push: true
+  run_command: python server.py
+  environment_slug: python
+  instance_count: 1
+  instance_size_slug: basic-xxs
