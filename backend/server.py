@@ -1,62 +1,50 @@
 import asyncio
 import websockets
-from websockets.server import WebSocketServerProtocol  # Updated import
+from websockets.server import WebSocketServerProtocol
 import json
 import logging
 from typing import Dict, Set
-from usb_handler import USBDeviceHandler
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class USBShareServer:
     def __init__(self):
-        # Dictionary to store connections by key
-        self.hosts: Dict[str, WebSocketServerProtocol] = {}  # Updated type hint
-        self.clients: Dict[str, Set[WebSocketServerProtocol]] = {}  # Updated type hint
-        self.device_lists: Dict[str, list] = {}
-        # Add USB handler
-        self.usb_handler = USBDeviceHandler()
-        self.shared_devices: Dict[str, Set[str]] = {}  # key -> set of shared device IDs
+        self.hosts: Dict[str, Dict] = {}  # key -> {websocket, ip, port}
+        self.clients: Dict[str, Set[WebSocketServerProtocol]] = {}
 
-    async def register_host(self, websocket: WebSocketServerProtocol, key: str):  # Updated type hint
-        # Remove any existing host with the same key
+    async def register_host(self, websocket: WebSocketServerProtocol, key: str):
+        # Get client address
+        client_address = websocket.remote_address
+        host_ip = client_address[0]
+        
         if key in self.hosts:
-            old_host = self.hosts[key]
+            old_host = self.hosts[key]['websocket']
             await old_host.close()
-            await self.unregister(old_host)
             
-        self.hosts[key] = websocket
+        self.hosts[key] = {
+            'websocket': websocket,
+            'ip': host_ip,
+            'port': None  # Will be set when host sends port info
+        }
         self.clients[key] = set()
-        self.device_lists[key] = []
-        self.shared_devices[key] = set()
         
-        # Initialize device list
-        devices = self.usb_handler.list_host_devices()
-        self.device_lists[key] = devices
-        logger.info(f"Host registered with key: {key}")
-        
-        # Confirm registration to host
+        logger.info(f"Host registered with key: {key} at {host_ip}")
         await websocket.send(json.dumps({
             'type': 'registration_success',
-            'message': 'Successfully registered as host',
-            'devices': devices
+            'message': 'Successfully registered as host'
         }))
 
-    async def register_client(self, websocket: WebSocketServerProtocol, key: str):  # Updated type hint
+    async def register_client(self, websocket: WebSocketServerProtocol, key: str):
         if key in self.hosts:
             self.clients[key].add(websocket)
-            # Send success message to client
+            host_info = self.hosts[key]
+            # Send host connection info to client
             await websocket.send(json.dumps({
-                'type': 'registration_success',
-                'message': 'Successfully connected to host'
+                'type': 'host_info',
+                'host_ip': host_info['ip'],
+                'host_port': host_info['port']
             }))
-            # Send current device list if available
-            if self.device_lists[key]:
-                await websocket.send(json.dumps({
-                    'type': 'device_list',
-                    'devices': self.device_lists[key]
-                }))
             logger.info(f"Client connected to host with key: {key}")
             return True
         
@@ -66,28 +54,7 @@ class USBShareServer:
         }))
         return False
 
-    async def unregister(self, websocket: WebSocketServerProtocol):  # Updated type hint
-        # Remove from hosts
-        for key, host in list(self.hosts.items()):
-            if host == websocket:
-                del self.hosts[key]
-                del self.device_lists[key]
-                del self.shared_devices[key]
-                # Notify all clients of disconnection
-                for client in self.clients[key]:
-                    await client.send(json.dumps({'type': 'host_disconnected'}))
-                del self.clients[key]
-                logger.info(f"Host unregistered: {key}")
-                return
-
-        # Remove from clients
-        for key, client_set in self.clients.items():
-            if websocket in client_set:
-                client_set.remove(websocket)
-                logger.info(f"Client unregistered from key: {key}")
-                return
-
-    async def handle_connection(self, websocket: WebSocketServerProtocol):  # Updated type hint
+    async def handle_connection(self, websocket: WebSocketServerProtocol):
         try:
             async for message in websocket:
                 try:
@@ -98,88 +65,47 @@ class USBShareServer:
                     if message_type == 'host_connect':
                         await self.register_host(websocket, data['key'])
                     
+                    elif message_type == 'host_port_update':
+                        # Update host's TCP port
+                        key = next(k for k, v in self.hosts.items() 
+                                 if v['websocket'] == websocket)
+                        port = data.get('port')
+                        logger.info(f"Updating host {key} TCP port to: {port}")
+                        self.hosts[key]['port'] = port
+                        
+                        # Notify any already connected clients
+                        for client in self.clients.get(key, set()):
+                            await client.send(json.dumps({
+                                'type': 'host_info',
+                                'host_ip': self.hosts[key]['ip'],
+                                'host_port': port
+                            }))
+                    
                     elif message_type == 'client_connect':
                         await self.register_client(websocket, data['key'])
-                    
-                    elif message_type == 'device_list_update':
-                        if websocket in self.hosts.values():
-                            key = next(k for k, v in self.hosts.items() if v == websocket)
-                            self.device_lists[key] = data['devices']
-                            logger.info(f"Updated device list for {key}: {data['devices']}")
-                            for client in self.clients[key]:
-                                await client.send(json.dumps({
-                                    'type': 'device_list',
-                                    'devices': data['devices']
-                                }))
-                    
-                    elif message_type == 'connect_device':
-                        key = data['key']
-                        device_id = data['device_id']
-                        client_id = str(id(websocket))
-                        
-                        if key in self.hosts:
-                            # Start device forwarding
-                            success = await self.usb_handler.start_device_forwarding(
-                                device_id, client_id
-                            )
-                            
-                            response = {
-                                'type': 'device_connection_status',
-                                'device_id': device_id,
-                                'success': success
-                            }
-                            await websocket.send(json.dumps(response))
-                            
-                            if success:
-                                logger.info(f"Device {device_id} connected for client {client_id}")
-                            else:
-                                logger.error(f"Failed to connect device {device_id}")
-                    
-                    elif message_type == 'disconnect_device':
-                        client_id = str(id(websocket))
-                        success = self.usb_handler.stop_device_forwarding(client_id)
-                        await websocket.send(json.dumps({
-                            'type': 'device_disconnected',
-                            'success': success
-                        }))
-
-                    elif message_type == 'share_device':
-                        # Host is sharing a device
-                        key = data['key']
-                        device_id = data['device_id']
-                        if key in self.hosts and websocket == self.hosts[key]:
-                            self.shared_devices[key].add(device_id)
-                            # Notify clients of newly shared device
-                            for client in self.clients[key]:
-                                await client.send(json.dumps({
-                                    'type': 'device_available',
-                                    'device_id': device_id
-                                }))
-
-                    elif message_type == 'unshare_device':
-                        # Host is unsharing a device
-                        key = data['key']
-                        device_id = data['device_id']
-                        if key in self.hosts and websocket == self.hosts[key]:
-                            self.shared_devices[key].remove(device_id)
-                            # Notify clients
-                            for client in self.clients[key]:
-                                await client.send(json.dumps({
-                                    'type': 'device_unavailable',
-                                    'device_id': device_id
-                                }))
 
                 except json.JSONDecodeError:
                     logger.error(f"Invalid JSON received: {message}")
                 except Exception as e:
                     logger.error(f"Error processing message: {e}")
+                    logger.exception(e)
                     
         except websockets.exceptions.ConnectionClosed:
             logger.info("Connection closed normally")
-        except Exception as e:
-            logger.error(f"Connection error: {e}")
         finally:
-            await self.unregister(websocket)
+            # Clean up connections
+            for key, host in list(self.hosts.items()):
+                if host['websocket'] == websocket:
+                    del self.hosts[key]
+                    if key in self.clients:
+                        for client in self.clients[key]:
+                            await client.send(json.dumps({'type': 'host_disconnected'}))
+                        del self.clients[key]
+                    break
+            
+            for key, client_set in self.clients.items():
+                if websocket in client_set:
+                    client_set.remove(websocket)
 
 async def main():
     server = USBShareServer()

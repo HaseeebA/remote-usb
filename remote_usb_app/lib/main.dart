@@ -3,6 +3,7 @@ import 'package:window_manager/window_manager.dart';
 import 'services/usb_service.dart';
 import 'services/websocket_service.dart';
 import 'models/usb_device.dart';
+import 'dart:async';  // Add this import
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -88,18 +89,43 @@ class _HostPageState extends State<HostPage> {
   final _wsService = WebSocketService();
   String connectionKey = '';
   List<USBDevice> usbDevices = [];
+  StreamSubscription<dynamic>? _messageSubscription;  // Fix type declaration
+  bool _disposed = false;
 
   void _onDeviceShareChanged(USBDevice device, bool? value) {
     setState(() {
       device.isShared = value!;
-      // Send updated device list to server immediately
+      // Send updated device list directly through TCP
       final sharedDevices = usbDevices
           .where((d) => d.isShared)
           .map((d) => d.toJson())
           .toList();
-      print('Sending updated device list: $sharedDevices'); // Debug log
-      _wsService.updateDeviceList(sharedDevices);
+      print('Host: Sending device list update...');
+      _wsService.sendDirectMessage({
+        'type': 'device_list_update',
+        'devices': sharedDevices,
+      });
     });
+  }
+
+  Future<void> _handleDeviceRequest(String deviceId) async {
+    if (!mounted) return;
+
+    try {
+      final success = await _wsService.startDeviceSharing(deviceId);
+      if (!mounted) return;
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(
+          success ? 'Started sharing device: $deviceId' : 'Failed to share device: $deviceId'
+        )),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error sharing device: $e')),
+      );
+    }
   }
 
   @override
@@ -108,9 +134,24 @@ class _HostPageState extends State<HostPage> {
     _generateNewKey();
     _refreshDevices();
     
-    // Only listen for initial device detection
     _usbService.deviceStream.listen((devices) {
-      setState(() => usbDevices = devices);
+      if (mounted) {
+        setState(() => usbDevices = devices);
+      }
+    });
+
+    _messageSubscription = _wsService.messageStream.listen((message) {
+      print('Host received message: $message');
+      if (!mounted) return;
+
+      if (message['type'] == 'greeting') {
+        print('Client connected: ${message['message']}');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Client connected: ${message['message']}')),
+        );
+      } else if (message['type'] == 'request_device') {
+        _handleDeviceRequest(message['deviceId']);
+      }
     });
   }
 
@@ -120,6 +161,8 @@ class _HostPageState extends State<HostPage> {
 
   @override
   void dispose() {
+    _disposed = true;
+    _messageSubscription?.cancel();
     _wsService.disconnect();
     super.dispose();
   }
@@ -225,17 +268,57 @@ class _ClientPageState extends State<ClientPage> {
   final _wsService = WebSocketService();
   final TextEditingController _keyController = TextEditingController();
   List<USBDevice> availableDevices = [];
+  String? hostIP;
+  int? hostPort;
+  bool directlyConnected = false;
 
   @override
   void initState() {
     super.initState();
     _wsService.messageStream.listen((message) {
-      if (message['type'] == 'device_list') {
+      print('Client received message type: ${message['type']}');
+      if (message['type'] == 'host_info') {
+        setState(() {
+          hostIP = message['host_ip'];
+          hostPort = message['host_port'];
+        });
+        // Attempt direct connection
+        if (hostIP != null && hostPort != null) {
+          _wsService.connectToHost(hostIP!, hostPort!).then((_) {
+            setState(() => directlyConnected = true);
+            _wsService.disconnect(); // Disconnect from WebSocket server
+          });
+        }
+      } else if (message['type'] == 'device_list_update') {
+        print('Received updated device list');
         setState(() {
           availableDevices = (message['devices'] as List)
               .map((d) => USBDevice.fromJson(d))
               .toList();
         });
+      } else if (message['type'] == 'greeting_ack') {
+        print('Host acknowledged connection: ${message['message']}');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(message['message'])),
+        );
+      } else if (message['type'] == 'usb_data') {
+        // Handle incoming USB data
+        // This is where you would send the data to the virtual USB device
+        print('Received USB data for device: ${message['deviceId']}');
+      } else if (message['type'] == 'device_sharing_started') {
+        final success = message['success'] ?? false;
+        final deviceId = message['deviceId'];
+        if (success) {
+          print('Device sharing started successfully: $deviceId');
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Connected to device: $deviceId')),
+          );
+        } else {
+          print('Device sharing failed: ${message['error']}');
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to connect: ${message['error']}')),
+          );
+        }
       }
     });
   }
@@ -250,6 +333,22 @@ class _ClientPageState extends State<ClientPage> {
   void _connectToHost() {
     if (_keyController.text.isNotEmpty) {
       _wsService.connect(_keyController.text, ConnectionMode.client);
+    }
+  }
+
+  Future<void> _connectToDevice(USBDevice device) async {
+    print('Initiating connection to device: ${device.id}');
+    try {
+      _wsService.sendDirectMessage({
+        'type': 'request_device',
+        'deviceId': device.id,
+      });
+      print('Connection request sent for device: ${device.id}');
+    } catch (e) {
+      print('Error requesting device connection: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e')),
+      );
     }
   }
 
@@ -289,6 +388,14 @@ class _ClientPageState extends State<ClientPage> {
               ),
             ),
             const SizedBox(height: 20),
+            if (directlyConnected)
+              Card(
+                color: Colors.green[100],
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Text('Directly connected to host at $hostIP:$hostPort'),
+                ),
+              ),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -321,21 +428,7 @@ class _ClientPageState extends State<ClientPage> {
                       title: Text(device.name),
                       subtitle: Text(device.description),
                       trailing: ElevatedButton(
-                        onPressed: () async {
-                          final success = await _wsService.connectToDevice(
-                            device.id,
-                            _keyController.text,
-                          );
-                          if (success) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('Device connected successfully')),
-                            );
-                          } else {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('Failed to connect to device')),
-                            );
-                          }
-                        },
+                        onPressed: () => _connectToDevice(device), // Use the new method
                         child: const Text('Connect'),
                       ),
                     ),

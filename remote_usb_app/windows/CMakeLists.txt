@@ -52,6 +52,27 @@ add_subdirectory(${FLUTTER_MANAGED_DIR})
 # Application build; see runner/CMakeLists.txt.
 add_subdirectory("runner")
 
+# Add USBBridge library target (assuming usb_bridge.cpp is in the same directory)
+add_library(usb_bridge SHARED
+    usb_bridge.cpp
+    # ...existing source files if any...
+)
+# Link usb_bridge with SetupAPI (resolves SetupDi* symbols)
+target_link_libraries(usb_bridge PRIVATE setupapi)
+
+# Add WinUSB and SetupAPI libraries
+target_link_libraries(${BINARY_NAME} PRIVATE
+    flutter
+    flutter_wrapper_app
+    setupapi
+    usb_bridge    # Added linking to usb_bridge library
+)
+
+# Add Flutter method channel includes
+target_include_directories(${BINARY_NAME} PRIVATE
+  "${FLUTTER_EPHEMERAL_DIR}"
+  "${FLUTTER_EPHEMERAL_DIR}/cpp_client_wrapper/include"
+)
 
 # Generated plugin build rules, which manage building the plugins and adding
 # them to the application.
@@ -106,3 +127,6 @@ install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
 install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   CONFIGURATIONS Profile;Release
   COMPONENT Runtime)
+
+# Install usb_bridge.dll in the same directory as the executable.
+install(TARGETS usb_bridge RUNTIME DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
