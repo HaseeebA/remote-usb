@@ -135,6 +135,15 @@ class USBShareServer:
                             else:
                                 # Send data to host
                                 await self.hosts[sender_key]['websocket'].send(json.dumps(data))
+                    elif msg_type == 'stop_sharing':
+                        # Find the host for this client key and forward
+                        sender_key = None
+                        for k, host_info in self.hosts.items():
+                            if websocket in self.clients.get(k, set()):
+                                sender_key = k
+                                break
+                        if sender_key:
+                            await self.hosts[sender_key]['websocket'].send(json.dumps(data))
                     else:
                         logger.info(f"Unhandled message type: {msg_type}")
                 except json.JSONDecodeError:

@@ -21,10 +21,6 @@ class WebSocketService {
   final _statusController = StreamController<ConnectionStatus>.broadcast();
   Stream<ConnectionStatus> get statusStream => _statusController.stream;
 
-  ServerSocket? _tcpServer;
-  Socket? _tcpConnection;
-  int? _listeningPort;
-
   final _nativeUsbService = NativeUSBService();
   bool _isSharing = false;
   String? _activeDeviceId;  // Track currently shared device ID
@@ -43,9 +39,6 @@ class WebSocketService {
       await _channel!.ready;
 
       if (mode == ConnectionMode.host) {
-        // Start TCP server first
-        await startHosting();
-        
         // Then connect to WebSocket and send port info
         _channel!.sink.add(jsonEncode({
           'type': 'host_connect',
@@ -54,11 +47,6 @@ class WebSocketService {
 
         // Ensure port is sent after connection is established
         await Future.delayed(const Duration(milliseconds: 100));
-        print('Sending TCP port to server: $_listeningPort');
-        _channel!.sink.add(jsonEncode({
-          'type': 'host_port_update',
-          'port': _listeningPort,
-        }));
       } else {
         // Client connection
         _channel!.sink.add(jsonEncode({
@@ -105,85 +93,25 @@ class WebSocketService {
     }
   }
 
-  Future<void> startHosting() async {
-    try {
-      _tcpServer = await ServerSocket.bind(InternetAddress.anyIPv4, 0);
-      _listeningPort = _tcpServer!.port;
-      print('TCP Server started on port: $_listeningPort');
-      
-      _tcpServer!.listen((Socket socket) {
-        print('Client connected from: ${socket.remoteAddress}:${socket.remotePort}');
-        _tcpConnection = socket;
-        
-        // Send immediate acknowledgment to client
-        sendDirectMessage({
-          'type': 'greeting_ack',
-          'message': 'Host acknowledges connection'
-        });
-        
-        socket.listen(
-          (data) {
-            try {
-              // Split messages in case multiple are received together
-              final messages = utf8.decode(data).split('\n');
-              for (var msg in messages) {
-                if (msg.trim().isEmpty) continue;
-                final jsonData = jsonDecode(msg.trim());
-                print('Host received TCP message: $jsonData');
-                _messageController.add(jsonData);
-              }
-            } catch (e) {
-              print('Error processing TCP message: $e');
-            }
-          },
-          onError: (error) => print('TCP Error: $error'),
-          onDone: () {
-            print('Client disconnected');
-            _tcpConnection = null;
-          },
-        );
-      });
-    } catch (e) {
-      print('Error starting TCP server: $e');
-      rethrow;  // Propagate error so connect() knows it failed
+  Future<bool> startDeviceSharing(String deviceId) async {
+    print('Starting device sharing via WebSocket...');
+    if (_isSharing) {
+      print('Error: Already sharing a device');
+      return false;
     }
-  }
 
-  Future<void> connectToHost(String ip, int port) async {
+    // Instead of direct USB bridging, just notify server:
     try {
-      _tcpConnection = await Socket.connect(ip, port);
-      print('Connected to host at $ip:$port');
-      
-      // Send initial greeting right after connection
-      await Future.delayed(const Duration(milliseconds: 100));
-      sendDirectMessage({
-        'type': 'greeting',
-        'message': 'Client connected directly!'
+      sendMessage({
+        'type': 'start_usb_stream',
+        'deviceId': deviceId,
       });
-      
-      _tcpConnection!.listen(
-        (data) {
-          try {
-            // Split messages in case multiple are received together
-            final messages = utf8.decode(data).split('\n');
-            for (var msg in messages) {
-              if (msg.trim().isEmpty) continue;
-              final jsonData = jsonDecode(msg.trim());
-              print('Client received TCP message: $jsonData');
-              _messageController.add(jsonData);
-            }
-          } catch (e) {
-            print('Error processing TCP message: $e');
-          }
-        },
-        onError: (error) => print('TCP Error: $error'),
-        onDone: () {
-          print('Disconnected from host');
-          _tcpConnection = null;
-        },
-      );
+      _isSharing = true;
+      _activeDeviceId = deviceId;
+      return true;
     } catch (e) {
-      print('Error connecting to host: $e');
+      print('Error in startDeviceSharing: $e');
+      return false;
     }
   }
 
@@ -223,85 +151,6 @@ class WebSocketService {
     }
   }
 
-  Future<bool> startDeviceSharing(String deviceId) async {
-    print('Starting device sharing process...');
-    if (_tcpConnection == null) {
-      print('Error: No TCP connection available');
-      return false;
-    }
-    if (_isSharing) {
-      print('Error: Already sharing a device');
-      return false;
-    }
-
-    try {
-      print('Attempting to connect to device: $deviceId');
-      final success = await _nativeUsbService.connectDevice(deviceId);
-      print('Native USB connect result: $success');
-
-      if (success) {
-        _isSharing = true;
-        _activeDeviceId = deviceId;
-        print('Device sharing started successfully');
-        
-        // Notify client
-        sendDirectMessage({
-          'type': 'device_sharing_started',
-          'deviceId': deviceId,
-          'success': true,
-        });
-
-        // Start the data forwarding
-        _startUsbDataForwarding(deviceId);
-        return true;
-      } else {
-        print('Failed to connect to device');
-        sendDirectMessage({
-          'type': 'device_sharing_started',
-          'deviceId': deviceId,
-          'success': false,
-          'error': 'Failed to connect to device',
-        });
-        return false;
-      }
-    } catch (e) {
-      print('Error in startDeviceSharing: $e');
-      sendDirectMessage({
-        'type': 'device_sharing_started',
-        'deviceId': deviceId,
-        'success': false,
-        'error': e.toString(),
-      });
-      return false;
-    }
-  }
-
-  void _startUsbDataForwarding(String deviceId) {
-    print('Starting USB data forwarding for device: $deviceId');
-    Timer.periodic(const Duration(milliseconds: 16), (timer) async {
-      if (!_isSharing || _tcpConnection == null) {
-        print('Stopping USB forwarding: sharing=$_isSharing, connection=${_tcpConnection != null}');
-        timer.cancel();
-        return;
-      }
-
-      try {
-        final data = await _nativeUsbService.readDeviceData(deviceId);
-        if (data != null && data.isNotEmpty) {
-          print('Read ${data.length} bytes from device');
-          sendDirectMessage({
-            'type': 'usb_data',
-            'deviceId': deviceId,
-            'data': data,
-          });
-        }
-      } catch (e) {
-        print('Error in USB forwarding: $e');
-        timer.cancel();
-      }
-    });
-  }
-
   Future<bool> sendDeviceData(String deviceId, List<int> data) async {
     // Use native USB service instead of _usbStream
     try {
@@ -321,13 +170,21 @@ class WebSocketService {
       _isSharing = false;
       _activeDeviceId = null;
       
-      sendDirectMessage({
+      sendMessage({
         'type': 'device_sharing_stopped',
         'deviceId': deviceId,
       });
     } catch (e) {
       print('Error stopping device sharing: $e');
     }
+  }
+
+  void requestStopSharing(String deviceId) {
+    // Client calls this to end sharing on host
+    sendMessage({
+      'type': 'stop_sharing',
+      'deviceId': deviceId,
+    });
   }
 
   void disconnectDevice() {
@@ -344,66 +201,11 @@ class WebSocketService {
     }
   }
 
-  void sendDirectMessage(Map<String, dynamic> message) {
-    if (_tcpConnection != null) {
-      try {
-        final jsonStr = '${jsonEncode(message)}\n';
-        print('Sending direct message: $jsonStr');
-        _tcpConnection!.write(jsonStr);
-        _tcpConnection!.flush();
-      } catch (e) {
-        print('Error sending direct message: $e');
-      }
-    } else {
-      print('Cannot send message: no TCP connection');
-    }
-  }
-
-  void _checkConnectionState() {
-    if (_tcpConnection != null) {
-      _tcpConnection!.done.then((closed) {
-        if (closed) {
-          _tcpConnection = null;
-        }
-      }).catchError((e) {
-        print('Error checking connection state: $e');
-        _tcpConnection = null;
-      });
-    }
-  }
-
-  void updateDeviceList(List<Map<String, dynamic>> devices) {
-    if (_tcpConnection != null) {
-      try {
-        final message = {
-          'type': 'device_list_update',
-          'devices': devices,
-        };
-        print('Host sending device list through TCP: $message');
-        sendDirectMessage(message);
-      } catch (e) {
-        print('Error updating device list: $e');
-      }
-    }
-  }
-
   void disconnect() {
     stopDeviceSharing();
-    
-    if (_tcpConnection != null) {
-      _tcpConnection!.close().then((_) {
-        _tcpConnection = null;
-      });
-    }
 
     _channel?.sink.close();
     _channel = null;
-    
-    if (_tcpServer != null) {
-      _tcpServer!.close().then((_) {
-        _tcpServer = null;
-      });
-    }
   }
 
   @override

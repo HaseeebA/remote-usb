@@ -147,6 +147,9 @@ class _HostPageState extends State<HostPage> {
         );
       } else if (message['type'] == 'request_device') {
         _handleDeviceRequest(message['deviceId']);
+      } else if (message['type'] == 'stop_sharing') {
+        // Client requests stop
+        _wsService.stopDeviceSharing();
       }
     });
   }
@@ -279,12 +282,14 @@ class _ClientPageState extends State<ClientPage> {
           hostPort = message['host_port'];
         });
         // Attempt direct connection
+        /*
         if (hostIP != null && hostPort != null) {
           _wsService.connectToHost(hostIP!, hostPort!).then((_) {
             setState(() => directlyConnected = true);
             _wsService.disconnect(); // Disconnect from WebSocket server
           });
         }
+        */
       } else if (message['type'] == 'device_list_update') {
         print('Received updated device list');
         setState(() {
@@ -314,6 +319,16 @@ class _ClientPageState extends State<ClientPage> {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Failed to connect: ${message['error']}')),
           );
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to connect: ${message['error']}')),
+          );
+        }
+      } else if (message['type'] == 'device_sharing_stopped') {
+        // Host indicates device is disconnected
+        if (_connectedDeviceId == message['deviceId']) {
+          setState(() {
+            _connectedDeviceId = null;
+          });
         }
       }
     });
@@ -346,6 +361,12 @@ class _ClientPageState extends State<ClientPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error: $e')),
       );
+    }
+  }
+
+  void _disconnectDevice() {
+    if (_connectedDeviceId != null) {
+      _wsService.requestStopSharing(_connectedDeviceId!);
     }
   }
 
@@ -420,14 +441,21 @@ class _ClientPageState extends State<ClientPage> {
                 itemCount: availableDevices.length,
                 itemBuilder: (context, index) {
                   final device = availableDevices[index];
+                  final isConnected = (device.id == _connectedDeviceId);
+  }
                   return Card(
                     child: ListTile(
                       title: Text(device.name),
                       subtitle: Text(device.description),
-                      trailing: ElevatedButton(
-                        onPressed: () => _connectToDevice(device), // Use the new method
-                        child: const Text('Connect'),
-                      ),
+                      trailing: isConnected
+                          ? ElevatedButton(
+                              onPressed: _disconnectDevice,
+                              child: const Text('Disconnect'),
+                            )
+                          : ElevatedButton(
+                              onPressed: () => _connectToDevice(device),
+                              child: const Text('Connect'),
+                            ),
                     ),
                   );
                 },
@@ -438,4 +466,6 @@ class _ClientPageState extends State<ClientPage> {
       ),
     );
   }
+}
+
 }
