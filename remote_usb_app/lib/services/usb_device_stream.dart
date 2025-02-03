@@ -1,100 +1,58 @@
 import 'dart:async';
-import 'dart:ffi';
-import 'dart:io';
-import 'package:ffi/ffi.dart';
-
-typedef UsbOpenFunc = Pointer Function(Pointer<Utf8> devicePath);
-typedef UsbReadFunc = Int32 Function(Pointer handle, Pointer<Uint8> buffer, Int32 length);
-typedef UsbWriteFunc = Int32 Function(Pointer handle, Pointer<Uint8> buffer, Int32 length);
+import 'package:flutter/services.dart';
 
 class USBDeviceStream {
-  static final DynamicLibrary _nativeLib = Platform.isWindows
-      ? DynamicLibrary.open('usb_bridge.dll')
-      : DynamicLibrary.open('libusb_bridge.so');
+  static const MethodChannel _channel =
+      MethodChannel('com.example.remote_usb/usb');
 
-  final _usbOpen = _nativeLib.lookupFunction<UsbOpenFunc, UsbOpenFunc>('usb_open');
-  final _usbRead = _nativeLib.lookupFunction<UsbReadFunc, UsbReadFunc>('usb_read');
-  final _usbWrite = _nativeLib.lookupFunction<UsbWriteFunc, UsbWriteFunc>('usb_write');
+  static final USBDeviceStream _instance = USBDeviceStream._internal();
+  factory USBDeviceStream() => _instance;
+  USBDeviceStream._internal();
 
-  Pointer? _deviceHandle;
-  StreamController<List<int>>? _dataStreamController;
-  bool _isStreaming = false;
+  final StreamController<List<int>> _dataStreamController =
+      StreamController<List<int>>.broadcast();
 
-  Stream<List<int>>? get dataStream => _dataStreamController?.stream;
+  // Expose the stream of USB data.
+  Stream<List<int>> get dataStream => _dataStreamController.stream;
 
-  Future<bool> startStreaming(String devicePath) async {
-    if (_isStreaming) return false;
-
-    try {
-      final pathPointer = devicePath.toNativeUtf8();
-      _deviceHandle = _usbOpen(pathPointer);
-      malloc.free(pathPointer);
-
-      if (_deviceHandle == null || _deviceHandle == nullptr) {
-        return false;
+  // Initialize listener for incoming USB data.
+  void initialize() {
+    _channel.setMethodCallHandler((call) async {
+      if (call.method == 'usb_data') {
+        final List<dynamic> dataDynamic = call.arguments as List<dynamic>;
+        final List<int> data = dataDynamic.cast<int>();
+        _dataStreamController.add(data);
       }
+    });
+  }
 
-      _dataStreamController = StreamController<List<int>>.broadcast();
-      _isStreaming = true;
-
-      // Start reading data
-      _startReading();
-      return true;
+  // For host: Connect to USB device.
+  Future<bool> hostConnect(String deviceId) async {
+    try {
+      final result = await _channel.invokeMethod('host_connect', <String, dynamic>{
+        'deviceId': deviceId,
+      });
+      return result as bool;
     } catch (e) {
-      print('Error starting USB stream: $e');
+      print('hostConnect error: $e');
       return false;
     }
   }
 
-  void _startReading() async {
-    const bufferSize = 1024;
-    final buffer = calloc<Uint8>(bufferSize);
-
-    while (_isStreaming) {
-      try {
-        final bytesRead = _usbRead(_deviceHandle!, buffer, bufferSize);
-        if (bytesRead > 0) {
-          final data = List<int>.generate(
-              bytesRead, (i) => buffer.elementAt(i).value);
-          _dataStreamController?.add(data);
-        }
-        await Future.delayed(const Duration(milliseconds: 1));
-      } catch (e) {
-        print('Error reading USB data: $e');
-        break;
-      }
-    }
-
-    calloc.free(buffer);
-  }
-
-  Future<bool> writeData(List<int> data) async {
-    if (!_isStreaming) return false;
-
+  // For host: Write USB data.
+  Future<bool> writeUsbData(List<int> data) async {
     try {
-      final buffer = calloc<Uint8>(data.length);
-      for (var i = 0; i < data.length; i++) {
-        buffer[i] = data[i];
-      }
-
-      final bytesWritten = _usbWrite(_deviceHandle!, buffer, data.length);
-      calloc.free(buffer);
-
-      return bytesWritten == data.length;
+      final result = await _channel.invokeMethod(
+          'write_usb_data', <String, dynamic>{'data': data});
+      return result as bool;
     } catch (e) {
-      print('Error writing USB data: $e');
+      print('writeUsbData error: $e');
       return false;
     }
   }
 
-  void stopStreaming() {
-    _isStreaming = false;
-    _dataStreamController?.close();
-    _dataStreamController = null;
-    // Clean up native resources
-    if (_deviceHandle != null) {
-      // Add cleanup call to native library here
-      _deviceHandle = null;
-    }
+  // For cleanup, if needed.
+  void dispose() {
+    _dataStreamController.close();
   }
 }

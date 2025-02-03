@@ -36,7 +36,7 @@ class WebSocketService {
     
     try {
       // Make sure to use the wss:// protocol and remove any path components
-      final wsUrl = Uri.parse('ws://localhost:8765');
+      final wsUrl = Uri.parse('ws://134.209.86.113:8765');
       print('Connecting to WebSocket at: $wsUrl');
       
       _channel = WebSocketChannel.connect(wsUrl);

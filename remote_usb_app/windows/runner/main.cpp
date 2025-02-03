@@ -11,6 +11,8 @@
 #include <memory>
 #include <iostream>
 #include <vector>
+#include <thread>
+#include <chrono>
 
 #include "flutter_window.h"
 #include "utils.h"
@@ -23,7 +25,7 @@ DEFINE_GUID(GUID_DEVINTERFACE_USB_DEVICE, 0xA5DCBF10L, 0x6530, 0x11D2, 0x90, 0x1
 extern "C" {
     __declspec(dllimport) HANDLE __stdcall openDevice(const char* devicePath);
     __declspec(dllimport) int __stdcall readDevice(HANDLE handle, BYTE* buffer, int length);
-    // __declspec(dllimport) int __stdcall writeDevice(HANDLE handle, BYTE* buffer, int length);
+    __declspec(dllimport) int __stdcall writeDevice(HANDLE handle, BYTE* buffer, int length);
 }
 
 // Global device handle (initialized to INVALID_HANDLE_VALUE)
@@ -32,8 +34,29 @@ static HANDLE g_deviceHandle = INVALID_HANDLE_VALUE;
 // Forward declaration
 class FlutterWindow;
 
-// Global method channel
-std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> method_channel;
+// Global method channel pointer for invoking method calls back to Flutter.
+std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> method_channel_ptr;
+
+// Helper function: USB read loop for host.
+void StartUsbReadLoop() {
+    const int bufferSize = 1024;
+    BYTE* buffer = new BYTE[bufferSize];
+    while (g_deviceHandle != INVALID_HANDLE_VALUE) {
+        int bytesRead = readDevice(g_deviceHandle, buffer, bufferSize);
+        if (bytesRead > 0) {
+            std::vector<flutter::EncodableValue> dataList;
+            for (int i = 0; i < bytesRead; i++) {
+                dataList.push_back(flutter::EncodableValue(static_cast<int>(buffer[i])));
+            }
+            // Send the read data back to Flutter as "usb_data" message.
+            std::unique_ptr<flutter::EncodableValue> args =
+                std::make_unique<flutter::EncodableValue>(dataList);
+            method_channel_ptr->InvokeMethod("usb_data", std::move(args), nullptr);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    delete[] buffer;
+}
 
 void RegisterMethodChannel(flutter::FlutterEngine* engine) {
     auto channel = std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
@@ -44,62 +67,75 @@ void RegisterMethodChannel(flutter::FlutterEngine* engine) {
 
     channel->SetMethodCallHandler(
         [](const auto& call, auto result) {
-            if (call.method_name() == "connectDevice") {
+            if (call.method_name() == "host_connect") {
                 try {
                     const auto* arguments = std::get_if<flutter::EncodableMap>(call.arguments());
                     if (!arguments) {
                         result->Error("INVALID_ARGUMENTS", "Arguments must be a map");
                         return;
                     }
-
                     auto device_id_it = arguments->find(flutter::EncodableValue("deviceId"));
                     if (device_id_it == arguments->end()) {
                         result->Error("INVALID_ARGUMENTS", "deviceId is required");
                         return;
                     }
-
                     const auto& device_id = std::get<std::string>(device_id_it->second);
-                    std::cout << "Attempting to connect to device: " << device_id << std::endl;
-
-                    // Call the native usb_bridge's openDevice function.
+                    std::cout << "Host: Attempting to connect to device: " << device_id << std::endl;
                     g_deviceHandle = openDevice(device_id.c_str());
                     if (g_deviceHandle == INVALID_HANDLE_VALUE) {
                         result->Error("CONNECT_ERROR", "Failed to open device");
                         return;
                     }
+                    // Start a background thread to read USB data and send to Flutter.
+                    std::thread(StartUsbReadLoop).detach();
                     result->Success(flutter::EncodableValue(true));
                 } catch (const std::exception& e) {
                     result->Error("CONNECT_ERROR", e.what());
                 }
-            } else if (call.method_name() == "readDeviceData") {
-                // Read device data using usb_bridge's readDevice functionality.
+            } else if (call.method_name() == "write_usb_data") {
                 if (g_deviceHandle == INVALID_HANDLE_VALUE) {
                     result->Error("DEVICE_NOT_CONNECTED", "No device connected");
                     return;
                 }
-                const int bufferSize = 1024;
-                BYTE* buffer = new BYTE[bufferSize];
-                int bytesRead = readDevice(g_deviceHandle, buffer, bufferSize);
-                
-                if (bytesRead <= 0) {
+                try {
+                    const auto* arguments = std::get_if<flutter::EncodableMap>(call.arguments());
+                    if (!arguments) {
+                        result->Error("INVALID_ARGUMENTS", "Arguments must be a map");
+                        return;
+                    }
+                    auto data_it = arguments->find(flutter::EncodableValue("data"));
+                    if (data_it == arguments->end()) {
+                        result->Error("INVALID_ARGUMENTS", "data is required");
+                        return;
+                    }
+                    const auto& dataList = std::get<std::vector<flutter::EncodableValue>>(data_it->second);
+                    std::vector<int> data;
+                    for (const auto& val : dataList) {
+                        data.push_back(std::get<int>(val));
+                    }
+                    // Write data to the USB device.
+                    BYTE* buffer = new BYTE[data.size()];
+                    for (size_t i = 0; i < data.size(); i++) {
+                        buffer[i] = static_cast<BYTE>(data[i]);
+                    }
+                    // Cast data.size() to int to avoid conversion warnings.
+                    int bytesWritten = writeDevice(g_deviceHandle, buffer, static_cast<int>(data.size()));
                     delete[] buffer;
-                    result->Error("READ_ERROR", "Failed to read data or no data available");
-                    return;
+                    
+                    if (bytesWritten != static_cast<int>(data.size())) {
+                        result->Error("WRITE_ERROR", "Failed to write all data");
+                        return;
+                    }
+                    result->Success(flutter::EncodableValue(true));
+                } catch (const std::exception& e) {
+                    result->Error("WRITE_ERROR", e.what());
                 }
-                // Build an EncodableList for the read bytes.
-                std::vector<flutter::EncodableValue> dataList;
-                for (int i = 0; i < bytesRead; i++) {
-                    dataList.push_back(flutter::EncodableValue(static_cast<int>(buffer[i])));
-                }
-                delete[] buffer;
-                result->Success(flutter::EncodableValue(dataList));
             } else {
                 result->NotImplemented();
             }
         }
     );
-
-    method_channel = std::move(channel);
+    method_channel_ptr = std::move(channel);
 }
 
 int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE prev,
