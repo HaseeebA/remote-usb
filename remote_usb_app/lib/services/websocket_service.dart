@@ -347,7 +347,7 @@ class WebSocketService {
   void sendDirectMessage(Map<String, dynamic> message) {
     if (_tcpConnection != null) {
       try {
-        final jsonStr = jsonEncode(message) + '\n';
+        final jsonStr = '${jsonEncode(message)}\n';
         print('Sending direct message: $jsonStr');
         _tcpConnection!.write(jsonStr);
         _tcpConnection!.flush();

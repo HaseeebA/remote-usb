@@ -95,13 +95,9 @@ class _HostPageState extends State<HostPage> {
   void _onDeviceShareChanged(USBDevice device, bool? value) {
     setState(() {
       device.isShared = value!;
-      // Send updated device list directly through TCP
-      final sharedDevices = usbDevices
-          .where((d) => d.isShared)
-          .map((d) => d.toJson())
-          .toList();
-      print('Host: Sending device list update...');
-      _wsService.sendDirectMessage({
+      final sharedDevices = usbDevices.where((d) => d.isShared).map((d) => d.toJson()).toList();
+      // Send device list update through the server instead of direct TCP:
+      _wsService.sendMessage({
         'type': 'device_list_update',
         'devices': sharedDevices,
       });

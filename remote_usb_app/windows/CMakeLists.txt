@@ -54,9 +54,10 @@ add_subdirectory("runner")
 
 # Add USBBridge library target (assuming usb_bridge.cpp is in the same directory)
 add_library(usb_bridge SHARED
-    usb_bridge.cpp
-    # ...existing source files if any...
+  # Minimal addition to include usb_bridge.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/usb_bridge.cpp
 )
+
 # Link usb_bridge with SetupAPI (resolves SetupDi* symbols)
 target_link_libraries(usb_bridge PRIVATE setupapi)
 

@@ -68,6 +68,11 @@ std::string GetDeviceInterfacePathFromInstanceId(const std::string& instanceId) 
     return devicePath;
 }
 
+void InitializeUsbBridge() {
+    // Basic stub for now
+    std::cout << "Initializing USB Bridge..." << std::endl;
+}
+
 extern "C" {
     __declspec(dllexport) HANDLE __stdcall openDevice(const char* devicePath) {
         std::string instanceId(devicePath);
