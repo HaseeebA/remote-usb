@@ -335,7 +335,8 @@ class _ClientPageState extends State<ClientPage> {
   Future<void> _connectToDevice(USBDevice device) async {
     print('Initiating connection to device: ${device.id}');
     try {
-      _wsService.sendDirectMessage({
+      // Replace sendDirectMessage with sendMessage:
+      _wsService.sendMessage({
         'type': 'request_device',
         'deviceId': device.id,
       });

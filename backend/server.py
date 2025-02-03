@@ -102,6 +102,15 @@ class USBShareServer:
                         if sender_key:
                             for client in self.clients.get(sender_key, set()):
                                 await client.send(json.dumps(data))
+                    elif msg_type == 'request_device':
+                        # Sender must be a client; find its host and forward.
+                        sender_key = None
+                        for k, host in self.hosts.items():
+                            if websocket in self.clients.get(k, set()):
+                                sender_key = k
+                                break
+                        if sender_key:
+                            await self.hosts[sender_key]['websocket'].send(json.dumps(data))
                     else:
                         logger.info(f"Unhandled message type: {msg_type}")
                 except json.JSONDecodeError:
