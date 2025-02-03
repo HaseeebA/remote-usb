@@ -1,3 +1,14 @@
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+
 #include <flutter/dart_project.h>
 #include <flutter/flutter_view_controller.h>
 #include <flutter/method_channel.h>
@@ -5,7 +16,6 @@
 #include <flutter/standard_method_codec.h>
 #include <flutter/plugin_registrar_windows.h>
 #include <flutter/encodable_value.h>
-#include <windows.h>
 #include <winusb.h>
 #include <setupapi.h>
 #include <memory>
@@ -56,6 +66,43 @@ void StartUsbReadLoop() {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     delete[] buffer;
+}
+
+// New helper function: starts a TCP server socket to stream USB device data.
+void StartUsbTcpServer() {
+    // Initialize Winsock
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2,2), &wsaData) != 0) return;
+    SOCKET serverSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (serverSocket == INVALID_SOCKET) return;
+    sockaddr_in serverAddr;
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_addr.s_addr = INADDR_ANY;
+    serverAddr.sin_port = htons(9000); // example port
+    if (bind(serverSocket, (sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
+      closesocket(serverSocket);
+      WSACleanup();
+      return;
+    }
+    listen(serverSocket, 1);
+    // Accept connection from the relay server.
+    SOCKET clientSocket = accept(serverSocket, nullptr, nullptr);
+    if (clientSocket != INVALID_SOCKET) {
+        const int bufferSize = 1024;
+        BYTE* buffer = new BYTE[bufferSize];
+        // Stream loop: read from the USB device and send over socket.
+        while (g_deviceHandle != INVALID_HANDLE_VALUE) {
+            int bytesRead = readDevice(g_deviceHandle, buffer, bufferSize);
+            if (bytesRead > 0) {
+                send(clientSocket, reinterpret_cast<const char*>(buffer), bytesRead, 0);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        delete[] buffer;
+        closesocket(clientSocket);
+    }
+    closesocket(serverSocket);
+    WSACleanup();
 }
 
 void RegisterMethodChannel(flutter::FlutterEngine* engine) {
@@ -130,6 +177,10 @@ void RegisterMethodChannel(flutter::FlutterEngine* engine) {
                 } catch (const std::exception& e) {
                     result->Error("WRITE_ERROR", e.what());
                 }
+            } else if (call.method_name() == "start_usb_stream") {
+                // New branch: start TCP server for USB streaming.
+                std::thread(StartUsbTcpServer).detach();
+                result->Success(flutter::EncodableValue(true));
             } else {
                 result->NotImplemented();
             }

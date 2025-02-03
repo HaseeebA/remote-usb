@@ -52,11 +52,30 @@ class USBShareServer:
                     logger.info(f"Received message: {msg_type}")
                     if msg_type == 'host_connect':
                         await self.register_host(websocket, data['key'])
+                        # Notify host connection established.
+                        await websocket.send(json.dumps({
+                            'type': 'greeting_ack',
+                            'message': 'Host is online'
+                        }))
                     elif msg_type == 'client_connect':
                         await self.register_client(websocket, data['key'])
+                        # Notify client that connection is established.
+                        await websocket.send(json.dumps({
+                            'type': 'greeting_ack',
+                            'message': 'Connected to host'
+                        }))
+                    elif msg_type == 'start_usb_stream':
+                        # Relay the command from host to all connected clients.
+                        sender_key = None
+                        for k, host in self.hosts.items():
+                            if host['websocket'] == websocket:
+                                sender_key = k
+                                break
+                        if sender_key:
+                            for client in self.clients.get(sender_key, set()):
+                                await client.send(message)
                     elif msg_type == 'relay_message':
                         # Relay messages between host and client over the server.
-                        # Determine which key this websocket belongs to.
                         sender_key = None
                         for k, host in self.hosts.items():
                             if host['websocket'] == websocket:
@@ -73,7 +92,6 @@ class USBShareServer:
                             else:
                                 # Sender is a client; forward to the host.
                                 await self.hosts[sender_key]['websocket'].send(message)
-                    # Remove host_port_update branch; not needed now.
                     else:
                         logger.info(f"Unhandled message type: {msg_type}")
                 except json.JSONDecodeError:

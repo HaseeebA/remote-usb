@@ -66,6 +66,7 @@ target_link_libraries(${BINARY_NAME} PRIVATE
     flutter_wrapper_app
     setupapi
     usb_bridge    # Added linking to usb_bridge library
+    ws2_32        # <-- New: link Winsock2 library for TCP socket API
 )
 
 # Add Flutter method channel includes

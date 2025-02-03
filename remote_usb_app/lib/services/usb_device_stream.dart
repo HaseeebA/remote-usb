@@ -22,6 +22,9 @@ class USBDeviceStream {
         final List<dynamic> dataDynamic = call.arguments as List<dynamic>;
         final List<int> data = dataDynamic.cast<int>();
         _dataStreamController.add(data);
+      } else if (call.method == 'greeting_ack') {
+        // Notify that host and client are connected.
+        print('Received greeting from host: connection established');
       }
     });
   }
