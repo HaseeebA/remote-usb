@@ -105,8 +105,8 @@ class _HostPageState extends State<HostPage> {
   }
 
   Future<void> _handleDeviceRequest(String deviceId) async {
-    if (!mounted) return;
-
+    // Remove direct TCP usage, rely on server:
+    print('Starting device sharing process via WebSocket for $deviceId');
     try {
       final success = await _wsService.startDeviceSharing(deviceId);
       if (!mounted) return;

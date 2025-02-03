@@ -65,15 +65,19 @@ class USBShareServer:
                             'message': 'Connected to host'
                         }))
                     elif msg_type == 'start_usb_stream':
-                        # Relay the command from host to all connected clients.
+                        # Host indicates device streaming should begin
                         sender_key = None
-                        for k, host in self.hosts.items():
-                            if host['websocket'] == websocket:
+                        for k, host_info in self.hosts.items():
+                            if host_info['websocket'] == websocket:
                                 sender_key = k
                                 break
                         if sender_key:
-                            for client in self.clients.get(sender_key, set()):
-                                await client.send(message)
+                            # Forward to the client(s) if needed, or just confirm to host:
+                            await websocket.send(json.dumps({
+                                'type': 'device_sharing_started',
+                                'success': True,
+                                'deviceId': data['deviceId']
+                            }))
                     elif msg_type == 'relay_message':
                         # Relay messages between host and client over the server.
                         sender_key = None
@@ -111,6 +115,26 @@ class USBShareServer:
                                 break
                         if sender_key:
                             await self.hosts[sender_key]['websocket'].send(json.dumps(data))
+                    elif msg_type == 'usb_data':
+                        # Relay USB data between host and client(s).
+                        sender_key = None
+                        is_host = False
+                        for k, host_info in self.hosts.items():
+                            if host_info['websocket'] == websocket:
+                                sender_key = k
+                                is_host = True
+                                break
+                            if websocket in self.clients.get(k, set()):
+                                sender_key = k
+                                break
+                        if sender_key:
+                            if is_host:
+                                # Send data to clients
+                                for c in self.clients[sender_key]:
+                                    await c.send(json.dumps(data))
+                            else:
+                                # Send data to host
+                                await self.hosts[sender_key]['websocket'].send(json.dumps(data))
                     else:
                         logger.info(f"Unhandled message type: {msg_type}")
                 except json.JSONDecodeError:
