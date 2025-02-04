@@ -26,6 +26,34 @@ class USBShareServer:
             'type': 'registration_success',
             'message': 'Successfully registered as host'
         }))
+    
+    # Add to USBShareServer class
+    async def handle_usb_data(self, sender_ws: WebSocketServerProtocol, data: dict):
+        """Efficiently relay binary USB data between paired devices"""
+        sender_key = await self.get_connection_key(sender_ws)
+        if not sender_key:
+            return
+
+        # Host -> All Clients
+        if sender_ws == self.hosts.get(sender_key, {}).get('websocket'):
+            for client in self.clients.get(sender_key, set()):
+                await client.send(json.dumps({
+                    'type': 'usb_data',
+                    'data': data['data'],
+                    'device_id': data['device_id']
+                }))
+        # Client -> Host
+        else:
+            host_ws = self.hosts.get(sender_key, {}).get('websocket')
+            if host_ws:
+                await host_ws.send(json.dumps({
+                    'type': 'usb_data',
+                    'data': data['data'],
+                    'device_id': data['device_id']
+                }))
+
+    # Update message handler
+    
 
     async def register_client(self, websocket: WebSocketServerProtocol, key: str):
         if key in self.hosts:
@@ -50,6 +78,7 @@ class USBShareServer:
                     data = json.loads(message)
                     msg_type = data.get('type', '')
                     logger.info(f"Received message: {msg_type}")
+                    print(f"Received message: {data}")  # Print all messages
                     if msg_type == 'host_connect':
                         await self.register_host(websocket, data['key'])
                         # Notify host connection established.
@@ -116,25 +145,7 @@ class USBShareServer:
                         if sender_key:
                             await self.hosts[sender_key]['websocket'].send(json.dumps(data))
                     elif msg_type == 'usb_data':
-                        # Relay USB data between host and client(s).
-                        sender_key = None
-                        is_host = False
-                        for k, host_info in self.hosts.items():
-                            if host_info['websocket'] == websocket:
-                                sender_key = k
-                                is_host = True
-                                break
-                            if websocket in self.clients.get(k, set()):
-                                sender_key = k
-                                break
-                        if sender_key:
-                            if is_host:
-                                # Send data to clients
-                                for c in self.clients[sender_key]:
-                                    await c.send(json.dumps(data))
-                            else:
-                                # Send data to host
-                                await self.hosts[sender_key]['websocket'].send(json.dumps(data))
+                        await self.handle_usb_data(websocket, data)
                     elif msg_type == 'stop_sharing':
                         # Find the host for this client key and forward
                         sender_key = None

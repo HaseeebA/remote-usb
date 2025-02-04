@@ -16,7 +16,7 @@ class NativeUSBService {
   Future<bool> connectDevice(String deviceId) async {
     try {
       print('NativeUSBService: Connecting to device $deviceId');
-      final result = await platform.invokeMethod('connectDevice', {'deviceId': deviceId});
+      final result = await platform.invokeMethod('host_connect', {'deviceId': deviceId});
       print('NativeUSBService: Connect result: $result');
       return result == true;
     } catch (e) {

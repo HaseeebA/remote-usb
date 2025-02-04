@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'native_usb_service.dart';  // Add this import
 
@@ -100,6 +99,13 @@ class WebSocketService {
       return false;
     }
 
+    // Connect to the device before starting to read data
+    final connected = await _nativeUsbService.connectDevice(deviceId);
+    if (!connected) {
+      print('Error: Failed to connect to device');
+      return false;
+    }
+
     // Instead of direct USB bridging, just notify server:
     try {
       sendMessage({
@@ -108,6 +114,18 @@ class WebSocketService {
       });
       _isSharing = true;
       _activeDeviceId = deviceId;
+
+      // Start sending USB data periodically
+      _nativeUsbService.usbDataStream(deviceId).listen((data) {
+        sendMessage({
+          'type': 'usb_data',
+          'deviceId': deviceId,
+          'data': base64Encode(data), // Send as base64
+        });
+      });
+
+  return true;
+
       return true;
     } catch (e) {
       print('Error in startDeviceSharing: $e');

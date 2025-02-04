@@ -270,6 +270,7 @@ class _ClientPageState extends State<ClientPage> {
   String? hostIP;
   int? hostPort;
   bool directlyConnected = false;
+  String? _connectedDeviceId; // Track currently connected device
 
   @override
   void initState() {
@@ -304,24 +305,16 @@ class _ClientPageState extends State<ClientPage> {
         );
       } else if (message['type'] == 'usb_data') {
         // Handle incoming USB data
-        // This is where you would send the data to the virtual USB device
         print('Received USB data for device: ${message['deviceId']}');
+        // Process the USB data here
+        final List<int> data = List<int>.from(message['data']);
+        // Send the data to the virtual USB device
+        _wsService.sendDeviceData(message['deviceId'], data);
       } else if (message['type'] == 'device_sharing_started') {
-        final success = message['success'] ?? false;
-        final deviceId = message['deviceId'];
-        if (success) {
-          print('Device sharing started successfully: $deviceId');
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Connected to device: $deviceId')),
-          );
-        } else {
-          print('Device sharing failed: ${message['error']}');
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Failed to connect: ${message['error']}')),
-          );
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Failed to connect: ${message['error']}')),
-          );
+        if (message['success'] == true) {
+          setState(() {
+            _connectedDeviceId = message['deviceId'];
+          });
         }
       } else if (message['type'] == 'device_sharing_stopped') {
         // Host indicates device is disconnected
@@ -442,7 +435,6 @@ class _ClientPageState extends State<ClientPage> {
                 itemBuilder: (context, index) {
                   final device = availableDevices[index];
                   final isConnected = (device.id == _connectedDeviceId);
-  }
                   return Card(
                     child: ListTile(
                       title: Text(device.name),
@@ -461,11 +453,17 @@ class _ClientPageState extends State<ClientPage> {
                 },
               ),
             ),
+            if (_connectedDeviceId != null)
+              Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Text(
+                  'Connected to device: $_connectedDeviceId',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+              ),
           ],
         ),
       ),
     );
   }
-}
-
 }

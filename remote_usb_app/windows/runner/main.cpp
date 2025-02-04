@@ -130,9 +130,12 @@ void RegisterMethodChannel(flutter::FlutterEngine* engine) {
                     std::cout << "Host: Attempting to connect to device: " << device_id << std::endl;
                     g_deviceHandle = openDevice(device_id.c_str());
                     if (g_deviceHandle == INVALID_HANDLE_VALUE) {
+                        DWORD error = GetLastError();
+                        std::cerr << "Failed to open device with error: " << error << std::endl;
                         result->Error("CONNECT_ERROR", "Failed to open device");
                         return;
                     }
+                    std::cout << "Device connected successfully: " << device_id << std::endl;
                     // Start a background thread to read USB data and send to Flutter.
                     std::thread(StartUsbReadLoop).detach();
                     result->Success(flutter::EncodableValue(true));
@@ -181,6 +184,58 @@ void RegisterMethodChannel(flutter::FlutterEngine* engine) {
                 // New branch: start TCP server for USB streaming.
                 std::thread(StartUsbTcpServer).detach();
                 result->Success(flutter::EncodableValue(true));
+            } else if (call.method_name() == "readDeviceData") {
+                if (g_deviceHandle == INVALID_HANDLE_VALUE) {
+                    result->Error("DEVICE_NOT_CONNECTED", "No device connected");
+                    return;
+                }
+                try {
+                    const int bufferSize = 1024;
+                    BYTE buffer[bufferSize];
+                    int bytesRead = readDevice(g_deviceHandle, buffer, bufferSize);
+                    std::vector<flutter::EncodableValue> dataList;
+                    for (int i = 0; i < bytesRead; i++) {
+                        dataList.push_back(flutter::EncodableValue(static_cast<int>(buffer[i])));
+                    }
+                    result->Success(flutter::EncodableValue(dataList));
+                } catch (const std::exception& e) {
+                    result->Error("READ_ERROR", e.what());
+                }
+            } else if (call.method_name() == "writeDeviceData") {
+                if (g_deviceHandle == INVALID_HANDLE_VALUE) {
+                    result->Error("DEVICE_NOT_CONNECTED", "No device connected");
+                    return;
+                }
+                try {
+                    const auto* arguments = std::get_if<flutter::EncodableMap>(call.arguments());
+                    if (!arguments) {
+                        result->Error("INVALID_ARGUMENTS", "Arguments must be a map");
+                        return;
+                    }
+                    auto data_it = arguments->find(flutter::EncodableValue("data"));
+                    if (data_it == arguments->end()) {
+                        result->Error("INVALID_ARGUMENTS", "data is required");
+                        return;
+                    }
+                    const auto& dataList = std::get<std::vector<flutter::EncodableValue>>(data_it->second);
+                    std::vector<int> data;
+                    for (const auto& val : dataList) {
+                        data.push_back(std::get<int>(val));
+                    }
+                    BYTE* buffer = new BYTE[data.size()];
+                    for (size_t i = 0; i < data.size(); i++) {
+                        buffer[i] = static_cast<BYTE>(data[i]);
+                    }
+                    int bytesWritten = writeDevice(g_deviceHandle, buffer, static_cast<int>(data.size()));
+                    delete[] buffer;
+                    if (bytesWritten != static_cast<int>(data.size())) {
+                        result->Error("WRITE_ERROR", "Failed to write all data");
+                        return;
+                    }
+                    result->Success(flutter::EncodableValue(true));
+                } catch (const std::exception& e) {
+                    result->Error("WRITE_ERROR", e.what());
+                }
             } else {
                 result->NotImplemented();
             }
